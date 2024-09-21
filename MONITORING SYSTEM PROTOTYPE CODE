@@ -1,0 +1,164 @@
+// Initial prototype code for monitoring system   
+// Ultrasonic sensor is used as reference of Hydrostatic Pressure transducer.
+// Servomotor is used as reference of Electrically actuated ball valve
+
+#include <Servo.h> 
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// Pin Definitions 
+#define trigPin 9
+#define echoPin 10
+#define redLED 4
+#define greenLED 5
+#define manualSwitch 2
+#define servoPin 6
+#define buzzerPin 11
+#define l 13 // Define the buzzer pin
+
+// Global Variables
+long duration;
+float waterLevelCM;
+float pressure; // Placeholder for pressure value
+int pipeHeight = 60;  // Pipe height in cm
+Servo valveServo;
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // 16x2 LCD display
+bool manualOverride = false;
+unsigned long lastOpenTime = 0;  // To keep track of the last open time
+bool valveState = false;  // false = closed, true = open
+const unsigned long openDuration = 30000; // 30 seconds
+const float overflowThreshold = 45.0; // Water level threshold for overflow (in cm)
+
+// Function to measure water level
+float getWaterLevel() {
+  // Trigger the ultrasonic sensor
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  
+  // Read the echo signal
+  duration = pulseIn(echoPin, HIGH);
+  float distance = duration * 0.034 / 2;  // Convert echo time to distance in cm
+  float waterLevel = pipeHeight - distance;  // Water level is pipe height minus measured distance
+
+  // Check if the calculated water level is less than zero
+  if (waterLevel < 0) {
+    waterLevel = 0;  // Set water level to zero if negative
+  }
+
+  return waterLevel;
+}
+
+// Function to calculate pressure based on water level
+float calculatePressure(float waterLevel) {
+  // Simple pressure formula: P = rho * g * h (using water density of 1000 kg/m³, g = 9.81 m/s²)
+  float pressurePa = waterLevel * 9.81 * 1000;  // Pressure in Pascals (P = rho * g * h)
+  return pressurePa / 6895;  // Convert to psi (1 psi = 6895 Pascals)
+}
+
+// Function to update LED based on valve state
+void updateLEDs(bool valveOpen) {
+  if (valveOpen) {
+    digitalWrite(redLED, HIGH);   // Red LED on if valve is open
+    digitalWrite(greenLED, LOW);
+  } else {
+    digitalWrite(redLED, LOW);    // Green LED on if valve is closed
+    digitalWrite(greenLED, HIGH);
+  }
+}
+
+// Function to set the servo position
+void setServoPosition(int angle) {
+  // Move servo to the specified angle
+  valveServo.write(angle);
+  delay(500); // Allow time for the servo to reach the position
+}
+
+// Setup function
+void setup() {
+  // Initialize pins
+  pinMode(l,HIGH);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(redLED, OUTPUT);
+  pinMode(greenLED, OUTPUT);
+  pinMode(manualSwitch, INPUT_PULLUP);  // Use internal pull-up for ON/OFF switch
+  pinMode(buzzerPin, OUTPUT);           // Initialize buzzer pin
+
+  // Initialize Servo
+  valveServo.attach(servoPin);
+  
+  // Initialize LCD
+  lcd.begin(16, 2);  // Set LCD size to 16x2
+  lcd.backlight();
+  
+  // Initialize Serial Monitor for debugging
+  Serial.begin(9600);
+}
+
+// Loop function
+void loop() {
+  // Read the water level in cm
+  waterLevelCM = getWaterLevel();
+  // Calculate pressure in psi based on water level
+  pressure = calculatePressure(waterLevelCM);
+  
+  // Check manual override
+  if (digitalRead(manualSwitch) == LOW) {
+    manualOverride = true;  // Manual mode is enabled if switch is ON
+  } else {
+    manualOverride = false;  // Return to automatic mode if switch is OFF
+  }
+  
+  if (manualOverride) {
+    // Manual mode: Open the valve immediately if switch is ON
+    if (!valveState) { // Only move if the valve is currently closed
+      setServoPosition(90); // Open valve manually to 90 degrees
+      valveState = true;   // Set valve state to Open
+    }
+  } else {
+    // Automatic mode: Check water level and control the valve
+    if (waterLevelCM >= overflowThreshold) {
+      if (!valveState || (millis() - lastOpenTime >= openDuration)) {
+        setServoPosition(90);  // Open valve
+        valveState = true;     // Set valve state to Open
+        lastOpenTime = millis();  // Update the last open time
+      }
+    } else {
+      if (valveState) {
+        setServoPosition(0);   // Close valve
+        valveState = false;    // Set valve state to Closed
+      }
+    }
+  }
+  
+  // Activate buzzer if water level exceeds overflow threshold
+  if (waterLevelCM > overflowThreshold) {
+    digitalWrite(buzzerPin, HIGH); // Turn on buzzer
+  } else {
+    digitalWrite(buzzerPin, LOW);  // Turn off buzzer
+  }
+
+  // Update LED based on the valve state
+  updateLEDs(valveState);
+
+  // Display water level, pressure, and valve status on LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("WL: ");
+  lcd.print(waterLevelCM, 2);  // Display water level in cm with 2 decimal places
+  lcd.print(" cm");
+  
+  lcd.setCursor(0, 1);
+  lcd.print("P: ");
+  lcd.print(pressure, 2);     // Display pressure in psi with 2 decimal places
+  lcd.print("psi");
+  
+  lcd.setCursor(10, 1);
+  lcd.print(" VC:");
+  lcd.print(valveState ? "OP" : "CL"); // Display valve status: OP (Open) or CL (Closed)
+
+  delay(500);  // Small delay to avoid flooding the sensor readings
+}
